@@ -1,0 +1,37 @@
+name: PR Review Agent
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: pr-review-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Dependency review security scan
+        uses: actions/dependency-review-action@v4
+        continue-on-error: true
+
+      - name: Run PR review agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          PR_REVIEW_AGENT_FAIL_ON_FINDINGS: "true"
+          PR_REVIEW_AGENT_RESOLVE_THREADS: "true"
+        run: python3 scripts/pr_review_agent.py
