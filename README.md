@@ -28,3 +28,9 @@ Environment flags:
 - `PR_REVIEW_AGENT_RESOLVE_THREADS=true` resolves previous review threads only after the current review has no findings.
 
 The agent does not rewrite PR source code automatically. It makes the code “clear before merge” by blocking the workflow until reported findings are fixed, then clearing previous review threads after a clean run.
+
+### Why the agent may not start on a PR
+
+If this workflow is being introduced by the same PR, GitHub may not run it until the workflow file exists on the target/default branch. After this PR is merged, later PRs will trigger it automatically.
+
+The workflow uses `pull_request_target` so the token can post/update PR comments and resolve review threads. To avoid executing untrusted PR changes with that token, it checks out trusted agent code separately under `agent/` and checks out the PR source under `pr/` only for analysis.

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.getenv("PR_REVIEW_AGENT_REPO_ROOT", Path(__file__).resolve().parents[1])).resolve()
 COMMENT_MARKER = "<!-- pr-review-agent -->"
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 Severity = Literal["critical", "high", "medium", "low", "info"]
