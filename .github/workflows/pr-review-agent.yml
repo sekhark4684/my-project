@@ -50,8 +50,8 @@ jobs:
           PR_REVIEW_AGENT_FAIL_ON_FINDINGS: "true"
           PR_REVIEW_AGENT_RESOLVE_THREADS: "true"
         run: |
-          AGENT_SCRIPT="agent/scripts/pr_review_agent.py"
           if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ] && [ -f "pr/scripts/pr_review_agent.py" ]; then
-            AGENT_SCRIPT="pr/scripts/pr_review_agent.py"
+            PYTHONPATH="$GITHUB_WORKSPACE/pr" python3 -m scripts.pr_review_agent
+          else
+            PYTHONPATH="$GITHUB_WORKSPACE/agent" python3 -m scripts.pr_review_agent
           fi
-          python3 "$AGENT_SCRIPT"

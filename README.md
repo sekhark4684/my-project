@@ -2,10 +2,10 @@
 
 ## GitHub PR Review Agent
 
-This repository includes a small PR review agent that can run locally or in GitHub Actions.
+This repository includes two small agents that can run locally or in GitHub Actions: `CodeReviewAgent` in `scripts/pr_review_agent.py` reviews changed code, and `PRCommentAgent` in `scripts/pr_comment_agent.py` posts the right resolution guidance back to the PR.
 
 ```bash
-python3 scripts/pr_review_agent.py
+python3 -m scripts.pr_review_agent
 ```
 
 The agent intentionally stays lightweight while following a clear merge workflow:
@@ -20,7 +20,7 @@ Current checks focus on high-value review feedback:
 - Project guidance from `all.md`, including missing tests or docs when guidance asks for them
 - Potential secrets and unsafe code patterns
 - GitHub Actions workflow hygiene, such as permissions, timeouts, and floating action references
-- AWS Terraform checks, including IAM wildcards, public security groups, tags, encryption/recovery, and ECS cluster/service/task logging and resilience gaps
+- Generic infrastructure checks, including wildcard permissions, public exposure, missing tags, floating container images, and Dockerfiles that may run as root
 
 Environment flags:
 

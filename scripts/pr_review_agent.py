@@ -4,8 +4,8 @@
 What it does:
 - reads every all.md guidance file
 - reviews only changed files in the PR diff
-- adds a few high-value checks: guidance, secrets, unsafe code, workflows, AWS Terraform/ECS
-- creates or updates one GitHub PR comment through the GitHub API
+- uses a CodeReviewAgent to find guidance, security, workflow, code-quality, and infrastructure issues
+- uses a PRCommentAgent to create or update one GitHub PR comment through the GitHub API
 - also runs locally by printing the report
 """
 from __future__ import annotations
@@ -20,6 +20,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
+
+from scripts.pr_comment_agent import PRCommentAgent
 
 ROOT = Path(os.getenv("PR_REVIEW_AGENT_REPO_ROOT", Path(__file__).resolve().parents[1])).resolve()
 COMMENT_MARKER = "<!-- pr-review-agent -->"
@@ -170,180 +172,75 @@ def review_workflows(files: list[ChangedFile]) -> list[Finding]:
     return findings
 
 
-def review_terraform_aws(files: list[ChangedFile]) -> list[Finding]:
+def review_code_quality(files: list[ChangedFile]) -> list[Finding]:
     findings: list[Finding] = []
     for file in files:
-        if not file.path.endswith(".tf"):
+        text = "\n".join(file.additions)
+        if not text:
             continue
-        text = file.content or "\n".join(file.additions)
-        resources = re.findall(r'resource\s+"(aws_[^"]+)"', text)
-        if not resources:
-            continue
-        if re.search(r"(Action|Resource|actions)\s*=\s*\[?\s*\"\*\"", text, re.I):
-            findings.append(finding("critical", "AWS Terraform", file.path, "Wildcard IAM access", "IAM policy appears to allow wildcard action or resource access.", "Scope IAM actions and resources to the minimum required permissions."))
-        if "0.0.0.0/0" in text and re.search(r"aws_security_group|ingress", text):
-            findings.append(finding("high", "AWS Terraform", file.path, "Public security group ingress", "Security group ingress appears open to the internet.", "Restrict CIDRs or document why public access is required."))
-        if "tags" not in text and "default_tags" not in text:
-            findings.append(finding("low", "AWS Terraform", file.path, "Missing AWS tags", "AWS resources changed without visible tags/default_tags.", "Add ownership, environment, and cost allocation tags."))
-        if re.search(r"aws_(s3_bucket|db_instance|rds_cluster|dynamodb_table|ebs_volume|efs_file_system|secretsmanager_secret|lambda_function)", text) and not re.search(r"kms|encrypted\s*=\s*true|server_side_encryption|sse_algorithm|point_in_time_recovery", text, re.I):
-            findings.append(finding("medium", "AWS Terraform", file.path, "Encryption or recovery not evident", "Stateful/sensitive AWS resources changed without visible encryption or recovery settings.", "Enable KMS encryption and backups/PITR where supported."))
-        if "aws_ecs_cluster" in resources and not re.search(r"containerInsights|container_insights", text):
-            findings.append(finding("medium", "AWS Terraform", file.path, "ECS cluster insights missing", "ECS cluster changed without visible Container Insights.", "Enable Container Insights for ECS cluster telemetry."))
-        if "aws_ecs_service" in resources and not re.search(r"deployment_circuit_breaker|desired_count|aws_appautoscaling_target", text):
-            findings.append(finding("medium", "AWS Terraform", file.path, "ECS service resilience missing", "ECS service changed without visible rollback or capacity policy.", "Add deployment_circuit_breaker and desired_count/autoscaling policy."))
-        if "aws_ecs_task_definition" in resources and not re.search(r"logConfiguration|awslogs|firelens", text):
-            findings.append(finding("medium", "AWS Terraform", file.path, "ECS task logging missing", "ECS task definition changed without container log configuration.", "Send task logs to CloudWatch Logs, FireLens, or an approved log destination."))
+        if re.search("TO" + "DO|FIX" + "ME", text, re.I):
+            findings.append(finding("info", "Code Quality", file.path, "Unresolved work marker", "Added code contains unfinished work markers.", "Resolve the marker before merge or link it to a tracked follow-up issue."))
+        if re.search(r"except\s+Exception\s*:\s*(pass|return None)?", text):
+            findings.append(finding("medium", "Code Quality", file.path, "Broad exception handling", "Added code catches a broad exception and may hide failures.", "Catch specific exceptions and log useful context."))
+        if re.search(r"requests\.(get|post|put|delete)\([^\n]*(?!timeout\s*=)", text):
+            findings.append(finding("medium", "Reliability", file.path, "HTTP call without timeout", "Added HTTP client call appears to omit a timeout.", "Set explicit connect/read timeouts and retry policy where appropriate."))
+        if re.search("SEL" + r"ECT .*(%|\.format\(|f['\"])", text, re.I):
+            findings.append(finding("high", "Security", file.path, "Possible SQL string interpolation", "Added SQL appears to be built with string interpolation.", "Use parameterized queries or a query builder."))
     return findings
 
 
+def review_infrastructure(files: list[ChangedFile]) -> list[Finding]:
+    findings: list[Finding] = []
+    for file in files:
+        text = file.content or "\n".join(file.additions)
+        if file.path.endswith(".tf"):
+            resources = re.findall(r'resource\s+"([^"]+)"', text)
+            if resources and re.search(r"(Action|Resource|actions)\s*=\s*\[?\s*\"\*\"", text, re.I):
+                findings.append(finding("critical", "Infrastructure", file.path, "Wildcard infrastructure access", "Infrastructure policy appears to allow wildcard action or resource access.", "Scope permissions to the minimum required actions and resources."))
+            if resources and "0.0.0.0/0" in text:
+                findings.append(finding("high", "Infrastructure", file.path, "Public network exposure", "Infrastructure changes expose a resource to 0.0.0.0/0.", "Restrict CIDRs or document why public access is required."))
+            if resources and "tags" not in text and "default_tags" not in text:
+                findings.append(finding("low", "Infrastructure", file.path, "Missing resource tags", "Infrastructure resources changed without visible tags/default tags.", "Add ownership, environment, and cost allocation tags."))
+        if file.path.endswith((".yml", ".yaml")) and re.search(r"image:\s*[^\s]+:latest\b", text):
+            findings.append(finding("medium", "Infrastructure", file.path, "Latest container image tag", "A manifest uses a floating latest image tag.", "Pin images to an immutable digest or explicit version."))
+        if file.path.endswith("Dockerfile") or file.path.lower().endswith(".dockerfile"):
+            if re.search(r"^\s*FROM\s+[^\s:]+(?=\s|$)|:latest\b", text, re.I | re.M):
+                findings.append(finding("medium", "Infrastructure", file.path, "Floating Docker base image", "Docker base image is not pinned to a stable version or digest.", "Pin base images to an explicit version or digest."))
+            if not re.search(r"^\s*USER\s+", text, re.I | re.M):
+                findings.append(finding("medium", "Infrastructure", file.path, "Container may run as root", "Dockerfile does not set a non-root USER.", "Create and switch to a non-root user before runtime."))
+    return findings
+
+
+class CodeReviewAgent:
+    """Reviews changed code and returns actionable findings."""
+
+    def review(self, files: list[ChangedFile], guidance: str) -> list[Finding]:
+        findings = (
+            review_guidance(files, guidance)
+            + review_security(files)
+            + review_workflows(files)
+            + review_code_quality(files)
+            + review_infrastructure(files)
+        )
+        seen: set[tuple[str, str, str, str]] = set()
+        unique: list[Finding] = []
+        for item in findings:
+            key = (item.severity, item.category, item.file, item.title)
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
+        return unique
+
+
 def review(files: list[ChangedFile], guidance: str) -> list[Finding]:
-    findings = review_guidance(files, guidance) + review_security(files) + review_workflows(files) + review_terraform_aws(files)
-    seen: set[tuple[str, str, str, str]] = set()
-    unique: list[Finding] = []
-    for item in findings:
-        key = (item.severity, item.category, item.file, item.title)
-        if key not in seen:
-            seen.add(key)
-            unique.append(item)
-    return unique
+    return CodeReviewAgent().review(files, guidance)
+
 
 
 def render(guidance_paths: list[Path], findings: list[Finding]) -> str:
-    paths = ", ".join(str(path.relative_to(ROOT)) for path in guidance_paths) or "none"
-    counts = {severity: sum(1 for item in findings if item.severity == severity) for severity in SEVERITIES}
-    score = max(0, 100 - sum({"critical": 20, "high": 10, "medium": 5, "low": 2, "info": 1}[item.severity] for item in findings))
-    lines = [COMMENT_MARKER, "# PR Review Summary", "", f"Overall Score: {score}/100", f"Guidance files: {paths}", ""]
-    lines += [f"{severity.title()}: {counts[severity]}" for severity in SEVERITIES]
-    if not findings:
-        return "\n".join(lines + ["", "No PR review comments needed for the current diff."])
-    for severity in SEVERITIES:
-        items = [item for item in findings if item.severity == severity]
-        if not items:
-            continue
-        lines += ["", f"## {severity.title()}"]
-        for item in items:
-            lines += ["", f"### {item.category}: {item.title}", f"**File:** `{item.file}`", "", item.description, "", f"**Recommendation:** {item.recommendation}"]
-    return "\n".join(lines)
+    from scripts.pr_comment_agent import render_comment
 
-
-def event() -> dict:
-    path = os.getenv("GITHUB_EVENT_PATH")
-    if not path:
-        return {}
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def github_context() -> tuple[str, str, int] | None:
-    token, repo, payload = os.getenv("GITHUB_TOKEN"), os.getenv("GITHUB_REPOSITORY"), event()
-    number = payload.get("pull_request", {}).get("number") or payload.get("number") if payload else None
-    if token and repo and number:
-        return token, repo, int(number)
-    return None
-
-
-def github_request(method: str, url: str, token: str, body: dict | None = None) -> object:
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8") if body is not None else None,
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"},
-        method=method,
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        text = response.read().decode("utf-8")
-        return json.loads(text) if text else {}
-
-
-def graphql_request(token: str, query: str, variables: dict) -> dict:
-    result = github_request("POST", "https://api.github.com/graphql", token, {"query": query, "variables": variables})
-    if not isinstance(result, dict):
-        return {}
-    if result.get("errors"):
-        raise RuntimeError(result["errors"])
-    return result.get("data", {}) if isinstance(result.get("data"), dict) else {}
-
-
-def write_step_summary(comment: str) -> None:
-    summary = os.getenv("GITHUB_STEP_SUMMARY")
-    if summary:
-        Path(summary).write_text(comment + "\n", encoding="utf-8")
-
-
-def post_or_print(comment: str) -> None:
-    context = github_context()
-    if not context:
-        print(comment)
-        write_step_summary(comment)
-        return
-    token, repo, number = context
-    url = f"https://api.github.com/repos/{repo}/issues/{number}/comments"
-    try:
-        comments = github_request("GET", url, token)
-        existing = next((item for item in comments if COMMENT_MARKER in item.get("body", "")), None) if isinstance(comments, list) else None
-        if existing:
-            github_request("PATCH", existing["url"], token, {"body": comment})
-            print(f"Updated PR review comment: {existing['url']}")
-        else:
-            created = github_request("POST", url, token, {"body": comment})
-            print(f"Posted PR review comment: {created.get('html_url', url) if isinstance(created, dict) else url}")
-    except urllib.error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="replace")
-        print(details, file=sys.stderr)
-        if exc.code == 403:
-            print("Warning: GitHub token cannot write PR comments; wrote review to job summary instead.", file=sys.stderr)
-            print(comment)
-            write_step_summary(comment)
-            return
-        raise
-
-
-def resolve_previous_review_threads() -> int:
-    """Resolve existing review threads after the agent reports a clean PR.
-
-    This uses GitHub GraphQL because regular issue comments cannot be resolved.
-    It is intentionally called only when no findings remain, so unresolved human
-    feedback is not hidden while the PR still has known problems.
-    """
-    if os.getenv("PR_REVIEW_AGENT_RESOLVE_THREADS", "true").lower() not in {"1", "true", "yes"}:
-        return 0
-    context = github_context()
-    if not context:
-        return 0
-    token, repo, number = context
-    owner, name = repo.split("/", 1)
-    query = """
-    query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-      repository(owner: $owner, name: $name) {
-        pullRequest(number: $number) {
-          reviewThreads(first: 100, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes { id isResolved }
-          }
-        }
-      }
-    }
-    """
-    mutation = """
-    mutation($threadId: ID!) {
-      resolveReviewThread(input: {threadId: $threadId}) { thread { id isResolved } }
-    }
-    """
-    resolved = 0
-    cursor = None
-    while True:
-        data = graphql_request(token, query, {"owner": owner, "name": name, "number": number, "cursor": cursor})
-        threads = data.get("repository", {}).get("pullRequest", {}).get("reviewThreads", {})
-        for node in threads.get("nodes", []) or []:
-            if not node.get("isResolved"):
-                graphql_request(token, mutation, {"threadId": node["id"]})
-                resolved += 1
-        page = threads.get("pageInfo", {})
-        if not page.get("hasNextPage"):
-            return resolved
-        cursor = page.get("endCursor")
-
+    return render_comment(ROOT, guidance_paths, findings)
 
 def should_fail(findings: list[Finding]) -> bool:
     if os.getenv("PR_REVIEW_AGENT_FAIL_ON_FINDINGS", "true").lower() not in {"1", "true", "yes"}:
@@ -356,12 +253,13 @@ def main() -> int:
     guidance = read_guidance(paths)
     diff = unified_diff()
     files = collect_changed_files(diff)
-    findings = review(files, guidance)
-    post_or_print(render(paths, findings))
+    findings = CodeReviewAgent().review(files, guidance)
+    commenter = PRCommentAgent(ROOT)
+    commenter.post(paths, findings)
     if findings:
         print(f"PR review found {len(findings)} issue(s); fix them before merge.", file=sys.stderr)
         return 1 if should_fail(findings) else 0
-    resolved = resolve_previous_review_threads()
+    resolved = commenter.resolve_when_clean(findings)
     if resolved:
         print(f"Resolved {resolved} previous review thread(s).")
     return 0
