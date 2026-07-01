@@ -1,0 +1,52 @@
+name: PR Review Agent
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-review-agent-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  review:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted agent code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          path: agent
+          fetch-depth: 1
+
+      - name: Checkout PR code for analysis
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Dependency review security scan
+        if: github.event_name == 'pull_request_target'
+        uses: actions/dependency-review-action@v4
+        continue-on-error: true
+
+      - name: Run PR review agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_REVIEW_AGENT_REPO_ROOT: ${{ github.workspace }}/pr
+          PR_REVIEW_AGENT_FAIL_ON_FINDINGS: "true"
+          PR_REVIEW_AGENT_RESOLVE_THREADS: "true"
+        run: python3 agent/scripts/pr_review_agent.py
