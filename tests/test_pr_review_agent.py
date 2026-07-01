@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import patch
+import urllib.error
 
 from scripts import pr_review_agent as agent
 
@@ -82,3 +83,10 @@ def test_should_fail_defaults_to_blocking_when_findings_exist() -> None:
     with patch.dict("os.environ", {}, clear=True):
         assert agent.should_fail([agent.finding("low", "Guidance", "PR", "Thing", "desc", "rec")]) is True
         assert agent.should_fail([]) is False
+
+
+def test_post_falls_back_on_403_without_raising() -> None:
+    error = urllib.error.HTTPError("https://api.github.com", 403, "Forbidden", {}, None)
+    error.fp = type("Body", (), {"read": lambda self: b'{"message":"Resource not accessible by integration"}'})()
+    with patch.object(agent, "event", return_value={"pull_request": {"number": 3}}), patch.dict("os.environ", {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r"}), patch.object(agent, "github_request", side_effect=error):
+        agent.post_or_print("<!-- pr-review-agent --> body")

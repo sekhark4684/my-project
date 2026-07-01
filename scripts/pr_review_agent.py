@@ -115,13 +115,13 @@ def review_guidance(files: list[ChangedFile], guidance: str) -> list[Finding]:
     changed_paths = "\n".join(file.path for file in files)
     added = "\n".join(line for file in files for line in file.additions)
     if re.search(r"\btest(s|ing)?\b", guidance, re.I) and not re.search(r"(^|/)(tests?|spec|__tests__)/|(_test|\.test|\.spec)\.", changed_paths, re.I):
-        findings.append(finding("medium", "Guidance", "PR", "Tests may be missing", "Project guidance mentions tests, but no test file changed.", "Add tests or explain why this PR does not need tests."))
+        findings.append(finding("medium", "Guidance", "PR", "Tests may be missing", "Project guidance mentions tests, but no test file changed.", "Add tests or explain why this PR does not need them."))
     if re.search(r"\bdocumentation|docs|readme\b", guidance, re.I) and not re.search(r"(^|/)docs?/|readme|\.md$", changed_paths, re.I):
-        findings.append(finding("low", "Guidance", "PR", "Documentation may be missing", "Project guidance mentions documentation, but no documentation file changed.", "Update docs or explain why this PR does not need documentation."))
+        findings.append(finding("low", "Guidance", "PR", "Documentation may be missing", "Project guidance mentions documentation, but no documentation file changed.", "Update docs or explain why this is internal-only."))
     for raw in guidance.splitlines():
         rule = raw.strip(" -*\t")
         if re.search(r"\b(must|should|required|never|avoid|ensure|include|do not|don't)\b", rule, re.I):
-            terms = [word.lower() for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", rule) if word.lower() not in {"must", "should", "required", "never", "avoid", "ensure", "include", "with", "this", "that", "from", "file", "code", "when", "only", "also", "does"}]
+            terms = [word.lower() for word in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", rule) if word.lower() not in {"must", "should", "required", "never", "avoid", "ensure", "include", "with", "that", "this", "from", "when"}]
             if terms and not any(term in added.lower() for term in terms[:3]):
                 findings.append(finding("info", "Guidance", "all.md", "Verify project rule", f"Please verify this guidance is satisfied: `{rule}`", "Update the PR or reply why the rule does not apply."))
     return findings[:10]
@@ -146,7 +146,7 @@ def review_security(files: list[ChangedFile]) -> list[Finding]:
         text = "\n".join(file.additions)
         for label, pattern in secret_patterns:
             if re.search(pattern, text):
-                findings.append(finding("critical", "Security", file.path, f"Potential {label}", "Added lines look like they contain a secret.", "Remove it, rotate it if real, and load it from GitHub secrets."))
+                findings.append(finding("critical", "Security", file.path, f"Potential {label}", "Added lines look like they contain a secret.", "Remove it, rotate it if real, and load it from GitHub Secrets or a secret manager."))
                 break
         for severity, title, pattern, recommendation in risky_code:
             if re.search(pattern, text, re.I):
@@ -180,19 +180,19 @@ def review_terraform_aws(files: list[ChangedFile]) -> list[Finding]:
         if not resources:
             continue
         if re.search(r"(Action|Resource|actions)\s*=\s*\[?\s*\"\*\"", text, re.I):
-            findings.append(finding("critical", "AWS Terraform", file.path, "Wildcard IAM access", "IAM policy appears to allow wildcard action or resource access.", "Scope IAM actions and resources to the minimum required."))
+            findings.append(finding("critical", "AWS Terraform", file.path, "Wildcard IAM access", "IAM policy appears to allow wildcard action or resource access.", "Scope IAM actions and resources to the minimum required permissions."))
         if "0.0.0.0/0" in text and re.search(r"aws_security_group|ingress", text):
             findings.append(finding("high", "AWS Terraform", file.path, "Public security group ingress", "Security group ingress appears open to the internet.", "Restrict CIDRs or document why public access is required."))
         if "tags" not in text and "default_tags" not in text:
             findings.append(finding("low", "AWS Terraform", file.path, "Missing AWS tags", "AWS resources changed without visible tags/default_tags.", "Add ownership, environment, and cost allocation tags."))
-        if re.search(r"aws_(s3_bucket|db_instance|rds_cluster|dynamodb_table|ebs_volume|efs_file_system|secretsmanager_secret|lambda_function)", text) and not re.search(r"kms|encrypted\s*=\s*true", text):
-            findings.append(finding("medium", "AWS Terraform", file.path, "Encryption or recovery not evident", "Stateful/sensitive AWS resources changed without visible encryption or recovery settings.", "Enable encryption and configure backup/recovery."))
+        if re.search(r"aws_(s3_bucket|db_instance|rds_cluster|dynamodb_table|ebs_volume|efs_file_system|secretsmanager_secret|lambda_function)", text) and not re.search(r"kms|encrypted\s*=\s*true|server_side_encryption|sse_algorithm|point_in_time_recovery", text, re.I):
+            findings.append(finding("medium", "AWS Terraform", file.path, "Encryption or recovery not evident", "Stateful/sensitive AWS resources changed without visible encryption or recovery settings.", "Enable KMS encryption and backups/PITR where supported."))
         if "aws_ecs_cluster" in resources and not re.search(r"containerInsights|container_insights", text):
-            findings.append(finding("medium", "AWS Terraform", file.path, "ECS cluster insights missing", "ECS cluster changed without visible Container Insights.", "Enable Container Insights for better observability."))
+            findings.append(finding("medium", "AWS Terraform", file.path, "ECS cluster insights missing", "ECS cluster changed without visible Container Insights.", "Enable Container Insights for ECS cluster telemetry."))
         if "aws_ecs_service" in resources and not re.search(r"deployment_circuit_breaker|desired_count|aws_appautoscaling_target", text):
-            findings.append(finding("medium", "AWS Terraform", file.path, "ECS service resilience missing", "ECS service changed without visible rollback or capacity policy.", "Add deployment_circuit_breaker and auto-scaling targets."))
+            findings.append(finding("medium", "AWS Terraform", file.path, "ECS service resilience missing", "ECS service changed without visible rollback or capacity policy.", "Add deployment_circuit_breaker and desired_count/autoscaling policy."))
         if "aws_ecs_task_definition" in resources and not re.search(r"logConfiguration|awslogs|firelens", text):
-            findings.append(finding("medium", "AWS Terraform", file.path, "ECS task logging missing", "ECS task definition changed without container log configuration.", "Send task logs to CloudWatch or another logging backend."))
+            findings.append(finding("medium", "AWS Terraform", file.path, "ECS task logging missing", "ECS task definition changed without container log configuration.", "Send task logs to CloudWatch Logs, FireLens, or an approved log destination."))
     return findings
 
 
@@ -248,7 +248,7 @@ def github_request(method: str, url: str, token: str, body: dict | None = None) 
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8") if body is not None else None,
-        headers={"Authorization": f"token {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"},
         method=method,
     )
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -265,10 +265,17 @@ def graphql_request(token: str, query: str, variables: dict) -> dict:
     return result.get("data", {}) if isinstance(result.get("data"), dict) else {}
 
 
+def write_step_summary(comment: str) -> None:
+    summary = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary:
+        Path(summary).write_text(comment + "\n", encoding="utf-8")
+
+
 def post_or_print(comment: str) -> None:
     context = github_context()
     if not context:
         print(comment)
+        write_step_summary(comment)
         return
     token, repo, number = context
     url = f"https://api.github.com/repos/{repo}/issues/{number}/comments"
@@ -282,7 +289,13 @@ def post_or_print(comment: str) -> None:
             created = github_request("POST", url, token, {"body": comment})
             print(f"Posted PR review comment: {created.get('html_url', url) if isinstance(created, dict) else url}")
     except urllib.error.HTTPError as exc:
-        print(exc.read().decode("utf-8", errors="replace"), file=sys.stderr)
+        details = exc.read().decode("utf-8", errors="replace")
+        print(details, file=sys.stderr)
+        if exc.code == 403:
+            print("Warning: GitHub token cannot write PR comments; wrote review to job summary instead.", file=sys.stderr)
+            print(comment)
+            write_step_summary(comment)
+            return
         raise
 
 
