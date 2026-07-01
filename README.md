@@ -33,4 +33,4 @@ The agent does not rewrite PR source code automatically. It makes the code “cl
 
 If this workflow is being introduced by the same PR, GitHub may not run it until the workflow file exists on the target/default branch. After this PR is merged, later PRs will trigger it automatically.
 
-The workflow uses `pull_request_target` so the token can post/update PR comments and resolve review threads. To avoid executing untrusted PR changes with that token, it checks out trusted agent code separately under `agent/` and checks out the PR source under `pr/` only for analysis.
+The workflow uses `pull_request_target` so the token can post/update PR comments and resolve review threads. To avoid executing untrusted fork changes with that token, it checks out trusted agent code separately under `agent/` and checks out the PR source under `pr/` only for analysis. For same-repository PRs, it can run the PR copy of the agent so fixes to the agent are tested before merge; fork PRs continue to use the trusted base copy.
